@@ -9,12 +9,12 @@ import {
   updateCharacter,
   updateGame,
 } from "./game-state";
-import { Character, Ability, Skill, DamageType, Spell, getProficiencyBonus, getLevelFromXp, getModifier } from "./character";
+import { Character, Ability, Skill, DamageType, Spell, InventoryItem, Armor, calculateAC, getProficiencyBonus, getLevelFromXp, getModifier } from "./character";
 import { skillCheck, abilityCheck, savingThrow, getSpellSaveDC } from "./rules/abilities";
 import { createEnemyGroup } from "./rules/enemies";
 import { CANTRIPS, SPELLS_LEVEL_1, SPELLS_LEVEL_2, canCastSpell, useSpellSlot, rollSpellDamage } from "./rules/spells";
 import { CLASSES, getMaxHp, getSpellSlots, getFeaturesAtLevel, getSneakAttackDice } from "./rules/classes";
-import { WEAPONS, isFinesse, isRanged } from "./rules/equipment";
+import { WEAPONS, ARMOR, GEAR, isFinesse, isRanged } from "./rules/equipment";
 import { roll } from "./rules/dice";
 import {
   createCombatState,
@@ -25,6 +25,7 @@ import {
   applyDamageToEnemy,
   healCharacter,
   formatAttackResult,
+  rollDeathSave,
 } from "./rules/combat";
 
 // Build character summary for DM context
@@ -83,11 +84,62 @@ TOOLS:
 - cast_spell: When characters cast spells (cantrips or leveled)
 - apply_damage: When dealing damage to characters
 - heal: When healing characters
+- death_save: Roll a death save for an unconscious character (at 0 HP)
+- apply_condition: Apply a condition (blinded, poisoned, etc.) to a character
+- remove_condition: Remove a condition from a character
+- use_feature: Use a class feature (Second Wind, Action Surge, Arcane Recovery, Channel Divinity)
 - level_up: When a character has enough XP to level up
 - rest: When party takes a short or long rest
 - speak_as_npc: When NPCs talk (use their voice!)
 - start_combat: When combat begins
 - end_combat: When combat ends
+
+CLASS FEATURES:
+- Second Wind (Fighter): Bonus action, regain 1d10 + level HP. Recharges on short/long rest.
+- Action Surge (Fighter, L2+): Take an additional action this turn. Recharges on short/long rest.
+- Arcane Recovery (Wizard): After short rest, recover spell slots totaling half wizard level (rounded up). Once per long rest.
+- Channel Divinity (Cleric, L2+): Choose Turn Undead or Preserve Life. Recharges on short/long rest.
+  - Turn Undead: Undead within 30ft make WIS save or flee.
+  - Preserve Life: Distribute level*5 HP to creatures within 30ft (max half their HP).
+
+EQUIPMENT & ITEMS:
+- equip_item: Equip a weapon, armor, or shield from inventory
+- unequip_item: Unequip a weapon, armor, or shield
+- use_item: Use a consumable (healing potion heals 2d4+2, greater healing 4d4+4)
+- give_item: Give a new item to a character (from loot, purchases, etc)
+- give_gold: Give gold to a character
+
+CONCENTRATION:
+- Some spells require concentration (marked in spell data)
+- Character can only concentrate on one spell at a time
+- Casting a new concentration spell ends the previous one
+- Taking damage requires CON save: DC = max(10, damage/2). Failure = lose concentration
+- Being incapacitated, paralyzed, stunned, or unconscious breaks concentration
+- end_concentration: Manually end concentration on a spell
+
+CONDITIONS:
+- blinded: Disadvantage on attacks, attacks against have advantage
+- charmed: Can't attack charmer, charmer has advantage on social checks
+- deafened: Can't hear, auto-fail hearing checks
+- frightened: Disadvantage on checks/attacks while source visible
+- grappled: Speed 0
+- incapacitated: Can't take actions or reactions
+- paralyzed: Incapacitated, auto-fail STR/DEX saves, attacks have advantage + auto-crit in melee
+- petrified: Turned to stone, resistance to all damage
+- poisoned: Disadvantage on attacks and ability checks
+- prone: Disadvantage on attacks, melee attacks against have advantage, ranged have disadvantage
+- restrained: Speed 0, disadvantage on attacks and DEX saves, attacks against have advantage
+- stunned: Incapacitated, auto-fail STR/DEX saves, attacks against have advantage
+- unconscious: Incapacitated, auto-fail STR/DEX, prone, attacks have advantage + auto-crit in melee
+
+DEATH & DYING:
+- At 0 HP, characters fall unconscious and must make death saves
+- Death save: d20, no modifiers. 10+ = success, 9 or less = failure
+- Natural 20: regain 1 HP and wake up
+- Natural 1: counts as 2 failures
+- 3 successes: stabilize (stop rolling)
+- 3 failures: character dies
+- Taking damage while unconscious: automatic death save failure
 
 Keep it punchy. This is a terminal, not a novel.`;
 
@@ -159,6 +211,74 @@ const levelUpSchema = z.object({
 const restSchema = z.object({
   restType: z.enum(["short", "long"]).describe("Type of rest"),
   hitDiceToSpend: z.number().optional().describe("Number of hit dice to spend during short rest (max = level)"),
+});
+
+const deathSaveSchema = z.object({
+  characterId: z.string().describe("ID of the unconscious character to roll death save for"),
+});
+
+const applyConditionSchema = z.object({
+  characterId: z.string().describe("ID of the character to apply condition to"),
+  condition: z.enum([
+    "blinded", "charmed", "deafened", "frightened", "grappled",
+    "incapacitated", "invisible", "paralyzed", "petrified",
+    "poisoned", "prone", "restrained", "stunned", "unconscious"
+  ]).describe("The condition to apply"),
+  source: z.string().describe("What caused the condition"),
+  duration: z.string().optional().describe("Duration (e.g., '1 minute', 'until end of next turn')"),
+});
+
+const removeConditionSchema = z.object({
+  characterId: z.string().describe("ID of the character to remove condition from"),
+  condition: z.string().describe("The condition to remove"),
+});
+
+const useFeatureSchema = z.object({
+  characterId: z.string().describe("ID of the character using the feature"),
+  featureName: z.enum([
+    "Second Wind",
+    "Action Surge",
+    "Arcane Recovery",
+    "Channel Divinity: Turn Undead",
+    "Channel Divinity: Preserve Life",
+  ]).describe("Name of the class feature to use"),
+  targetId: z.string().optional().describe("Target character ID (for healing features like Preserve Life)"),
+  healingDistribution: z.record(z.string(), z.number()).optional().describe("For Preserve Life: map of characterId to HP to heal"),
+});
+
+const equipItemSchema = z.object({
+  characterId: z.string().describe("ID of the character"),
+  itemId: z.string().describe("ID of the item in inventory to equip"),
+});
+
+const unequipItemSchema = z.object({
+  characterId: z.string().describe("ID of the character"),
+  slot: z.enum(["weapon", "armor", "shield"]).describe("Equipment slot to unequip"),
+});
+
+const useItemSchema = z.object({
+  characterId: z.string().describe("ID of the character using the item"),
+  itemId: z.string().describe("ID of the item to use (potion, scroll, etc)"),
+  targetId: z.string().optional().describe("Target character ID (for healing potions, etc)"),
+});
+
+const giveItemSchema = z.object({
+  characterId: z.string().describe("ID of the character receiving the item"),
+  itemName: z.string().describe("Name of the item to give"),
+  itemType: z.enum(["weapon", "armor", "shield", "potion", "tool", "gear", "treasure"]).describe("Type of item"),
+  quantity: z.number().optional().describe("Quantity (default 1)"),
+  description: z.string().optional().describe("Item description"),
+});
+
+const giveGoldSchema = z.object({
+  characterId: z.string().describe("ID of the character receiving gold"),
+  amount: z.number().describe("Amount of gold to give"),
+  source: z.string().describe("Where the gold came from"),
+});
+
+const endConcentrationSchema = z.object({
+  characterId: z.string().describe("ID of the character to end concentration for"),
+  reason: z.string().describe("Why concentration ended (voluntary, damage, new spell, etc)"),
 });
 
 export async function runDM(
@@ -388,6 +508,20 @@ ${characterContext}`;
           }
 
           let resultText = `${caster.name} casts ${spell.name}!`;
+          let concentrationMsg = "";
+
+          // Handle concentration
+          if (spell.concentration) {
+            // If already concentrating, end the previous spell
+            if (caster.concentrating) {
+              const prevSpell = [...Object.values(CANTRIPS), ...Object.values(SPELLS_LEVEL_1), ...Object.values(SPELLS_LEVEL_2)]
+                .find((s) => s.id === caster.concentrating);
+              concentrationMsg = ` (Ends concentration on ${prevSpell?.name || "previous spell"})`;
+            }
+            // Start concentrating on new spell
+            await updateCharacter(roomCode, casterId, { concentrating: spellId });
+            concentrationMsg += ` [Concentrating]`;
+          }
 
           // Handle damage spells
           if (spell.damage && spell.damageType) {
@@ -457,10 +591,10 @@ ${characterContext}`;
 
           await addToTranscript(roomCode, {
             type: "dice",
-            content: resultText,
+            content: resultText + concentrationMsg,
           });
 
-          return { success: true, spell: spell.name };
+          return { success: true, spell: spell.name, concentrating: spell.concentration ? spellId : null };
         },
       },
 
@@ -476,20 +610,64 @@ ${characterContext}`;
           const char = game.characters.find((c) => c.id === characterId);
           if (!char) return { error: "Character not found" };
 
+          // Check if character was already unconscious (0 HP)
+          const wasUnconscious = char.currentHp <= 0;
+
           await setThinking(roomCode, `${char.name} takes damage...`);
 
           const result = applyDamage(char, amount, damageType as DamageType);
 
-          await updateCharacter(roomCode, characterId, {
+          const updates: Partial<Character> = {
             currentHp: result.newHp,
-          });
+          };
 
           let statusText = "";
-          if (result.dead) {
+
+          // If already unconscious and takes damage, auto-fail death save
+          if (wasUnconscious && amount > 0) {
+            const newFailures = Math.min(3, char.deathSaves.failures + 1);
+            updates.deathSaves = {
+              successes: char.deathSaves.successes,
+              failures: newFailures,
+            };
+
+            if (newFailures >= 3) {
+              statusText = ` Taking damage while unconscious causes a death save failure! ${char.name} has DIED!`;
+            } else {
+              statusText = ` Taking damage while unconscious causes a death save failure! (${char.deathSaves.successes}/3 successes, ${newFailures}/3 failures)`;
+            }
+          } else if (result.dead) {
             statusText = ` ${char.name} has died!`;
+            // End concentration on death
+            if (char.concentrating) {
+              updates.concentrating = null;
+            }
           } else if (result.unconscious) {
             statusText = ` ${char.name} falls unconscious!`;
+            // Reset death saves when first falling unconscious
+            updates.deathSaves = { successes: 0, failures: 0 };
+            // End concentration when falling unconscious
+            if (char.concentrating) {
+              updates.concentrating = null;
+              statusText += ` Loses concentration!`;
+            }
+          } else if (char.concentrating && !wasUnconscious) {
+            // Concentration save: DC = max(10, damage / 2)
+            const concentrationDC = Math.max(10, Math.floor(amount / 2));
+            const concSave = savingThrow(char, "constitution", concentrationDC);
+            const modStr = concSave.modifier >= 0 ? `+${concSave.modifier}` : `${concSave.modifier}`;
+
+            if (concSave.success) {
+              statusText += ` CONCENTRATION SAVE: [${concSave.roll.natural}]${modStr} = ${concSave.total} vs DC ${concentrationDC} - Maintained!`;
+            } else {
+              const lostSpell = [...Object.values(CANTRIPS), ...Object.values(SPELLS_LEVEL_1), ...Object.values(SPELLS_LEVEL_2)]
+                .find((s) => s.id === char.concentrating);
+              updates.concentrating = null;
+              statusText += ` CONCENTRATION SAVE: [${concSave.roll.natural}]${modStr} = ${concSave.total} vs DC ${concentrationDC} - FAILED! Loses ${lostSpell?.name || "spell"}!`;
+            }
           }
+
+          await updateCharacter(roomCode, characterId, updates);
 
           await addToTranscript(roomCode, {
             type: "combat",
@@ -525,6 +703,569 @@ ${characterContext}`;
           });
 
           return result;
+        },
+      },
+
+      death_save: {
+        description: "Roll a death saving throw for an unconscious character",
+        inputSchema: deathSaveSchema,
+        execute: async ({
+          characterId,
+        }: z.infer<typeof deathSaveSchema>) => {
+          const char = game.characters.find((c) => c.id === characterId);
+          if (!char) return { error: "Character not found" };
+
+          if (char.currentHp > 0) {
+            return { error: `${char.name} is not unconscious (HP: ${char.currentHp})` };
+          }
+
+          // Check if already stabilized or dead
+          if (char.deathSaves.successes >= 3) {
+            return { error: `${char.name} is already stabilized` };
+          }
+          if (char.deathSaves.failures >= 3) {
+            return { error: `${char.name} is already dead` };
+          }
+
+          await setThinking(roomCode, `${char.name} makes a death saving throw...`);
+
+          const result = rollDeathSave(char);
+
+          // Update death saves
+          const updates: Partial<Character> = {
+            deathSaves: {
+              successes: result.totalSuccesses,
+              failures: result.totalFailures,
+            },
+          };
+
+          // Natural 20: regain 1 HP
+          if (result.critical) {
+            updates.currentHp = 1;
+            updates.deathSaves = { successes: 0, failures: 0 }; // Reset on recovery
+          }
+
+          await updateCharacter(roomCode, characterId, updates);
+
+          // Build result message
+          let message = `${char.name} DEATH SAVE: [${result.roll.natural}]`;
+
+          if (result.critical) {
+            message += ` - NATURAL 20! ${char.name} regains 1 HP and wakes up!`;
+          } else if (result.fumble) {
+            message += ` - NATURAL 1! Two failures! (${result.totalSuccesses} successes, ${result.totalFailures} failures)`;
+          } else if (result.success) {
+            message += ` - Success! (${result.totalSuccesses}/3 successes, ${result.totalFailures}/3 failures)`;
+          } else {
+            message += ` - Failure! (${result.totalSuccesses}/3 successes, ${result.totalFailures}/3 failures)`;
+          }
+
+          if (result.stabilized && !result.critical) {
+            message += ` ${char.name} is STABILIZED!`;
+          } else if (result.dead) {
+            message += ` ${char.name} has DIED!`;
+          }
+
+          await addToTranscript(roomCode, {
+            type: "combat",
+            content: message,
+          });
+
+          return result;
+        },
+      },
+
+      apply_condition: {
+        description: "Apply a condition to a character",
+        inputSchema: applyConditionSchema,
+        execute: async ({
+          characterId,
+          condition,
+          source,
+          duration,
+        }: z.infer<typeof applyConditionSchema>) => {
+          const char = game.characters.find((c) => c.id === characterId);
+          if (!char) return { error: "Character not found" };
+
+          // Check if already has this condition
+          if (char.conditions.includes(condition)) {
+            return { error: `${char.name} already has the ${condition} condition` };
+          }
+
+          await setThinking(roomCode, `${char.name} becomes ${condition}...`);
+
+          const newConditions = [...char.conditions, condition];
+          const updates: Partial<Character> = { conditions: newConditions };
+
+          // Special handling for incapacitating conditions
+          const incapacitatingConditions = ["incapacitated", "paralyzed", "petrified", "stunned", "unconscious"];
+          let extraMessage = "";
+
+          // Break concentration if incapacitated
+          if (incapacitatingConditions.includes(condition) && char.concentrating) {
+            updates.concentrating = null;
+            extraMessage = ` ${char.name} loses concentration!`;
+          }
+
+          // Unconscious also makes you prone
+          if (condition === "unconscious" && !char.conditions.includes("prone")) {
+            updates.conditions = [...newConditions, "prone"];
+          }
+
+          await updateCharacter(roomCode, characterId, updates);
+
+          const durationText = duration ? ` (${duration})` : "";
+          await addToTranscript(roomCode, {
+            type: "combat",
+            content: `${char.name} is now ${condition.toUpperCase()}${durationText} from ${source}.${extraMessage}`,
+          });
+
+          return { applied: condition, character: char.name };
+        },
+      },
+
+      remove_condition: {
+        description: "Remove a condition from a character",
+        inputSchema: removeConditionSchema,
+        execute: async ({
+          characterId,
+          condition,
+        }: z.infer<typeof removeConditionSchema>) => {
+          const char = game.characters.find((c) => c.id === characterId);
+          if (!char) return { error: "Character not found" };
+
+          if (!char.conditions.includes(condition as any)) {
+            return { error: `${char.name} does not have the ${condition} condition` };
+          }
+
+          await setThinking(roomCode, `${char.name} is no longer ${condition}...`);
+
+          const newConditions = char.conditions.filter((c) => c !== condition);
+          await updateCharacter(roomCode, characterId, { conditions: newConditions });
+
+          await addToTranscript(roomCode, {
+            type: "system",
+            content: `${char.name} is no longer ${condition.toUpperCase()}.`,
+          });
+
+          return { removed: condition, character: char.name };
+        },
+      },
+
+      use_feature: {
+        description: "Use a class feature",
+        inputSchema: useFeatureSchema,
+        execute: async ({
+          characterId,
+          featureName,
+          targetId,
+          healingDistribution,
+        }: z.infer<typeof useFeatureSchema>) => {
+          const char = game.characters.find((c) => c.id === characterId);
+          if (!char) return { error: "Character not found" };
+
+          // Find the base feature (Channel Divinity variants share one feature)
+          const baseFeatureName = featureName.startsWith("Channel Divinity") ? "Channel Divinity" : featureName;
+          const feature = char.features.find((f) => f.name === baseFeatureName);
+
+          if (!feature) {
+            return { error: `${char.name} does not have the ${featureName} feature` };
+          }
+
+          if (feature.usesPerRest && feature.usesPerRest.current <= 0) {
+            const restType = feature.usesPerRest.restType === "short" ? "short or long" : "long";
+            return { error: `${featureName} has no uses remaining (recharges on ${restType} rest)` };
+          }
+
+          await setThinking(roomCode, `${char.name} uses ${featureName}...`);
+
+          let resultMessage = "";
+          const updates: Partial<Character> = {};
+
+          switch (featureName) {
+            case "Second Wind": {
+              // Roll 1d10 + fighter level
+              const healRoll = roll(`1d10+${char.level}`);
+              const hpRestored = Math.min(healRoll.total, char.maxHp - char.currentHp);
+              updates.currentHp = char.currentHp + hpRestored;
+              resultMessage = `${char.name} uses SECOND WIND! Rolls [${healRoll.rolls[0]}]+${char.level} = ${healRoll.total} HP restored. (${updates.currentHp}/${char.maxHp} HP)`;
+              break;
+            }
+
+            case "Action Surge": {
+              resultMessage = `${char.name} uses ACTION SURGE! They can take an additional action this turn.`;
+              break;
+            }
+
+            case "Arcane Recovery": {
+              // Can recover spell slots with combined level equal to half wizard level (rounded up)
+              const maxRecoveryLevel = Math.ceil(char.level / 2);
+              const slotsRecovered: { level: number }[] = [];
+              let remainingLevels = maxRecoveryLevel;
+
+              const newSpellSlots = { ...char.spellSlots };
+
+              for (let level = 1; level <= 5 && remainingLevels > 0; level++) {
+                const slotKey = level as keyof typeof char.spellSlots;
+                const slot = newSpellSlots[slotKey];
+
+                if (slot && slot.current < slot.max && level <= remainingLevels) {
+                  newSpellSlots[slotKey] = { ...slot, current: slot.current + 1 };
+                  slotsRecovered.push({ level });
+                  remainingLevels -= level;
+                }
+              }
+
+              if (slotsRecovered.length === 0) {
+                return { error: "No spell slots available to recover, or all slots are full" };
+              }
+
+              updates.spellSlots = newSpellSlots;
+              const slotDesc = slotsRecovered.map((s) => `level ${s.level}`).join(", ");
+              resultMessage = `${char.name} uses ARCANE RECOVERY! Recovered ${slotDesc} spell slot(s).`;
+              break;
+            }
+
+            case "Channel Divinity: Turn Undead": {
+              const spellSaveDC = 8 + char.proficiencyBonus + getModifier(char.abilities.wisdom);
+              resultMessage = `${char.name} uses CHANNEL DIVINITY: TURN UNDEAD! All undead within 30 feet must make a DC ${spellSaveDC} Wisdom save or be turned for 1 minute.`;
+              break;
+            }
+
+            case "Channel Divinity: Preserve Life": {
+              const healingPool = char.level * 5;
+
+              if (healingDistribution) {
+                // Apply the specified healing
+                let totalHealed = 0;
+                const healResults: string[] = [];
+
+                for (const [targetCharId, amount] of Object.entries(healingDistribution)) {
+                  const target = game.characters.find((c) => c.id === targetCharId);
+                  if (target && totalHealed + amount <= healingPool) {
+                    const maxHeal = Math.floor(target.maxHp / 2) - target.currentHp;
+                    const actualHeal = Math.min(amount, Math.max(0, maxHeal));
+                    if (actualHeal > 0) {
+                      await updateCharacter(roomCode, targetCharId, {
+                        currentHp: target.currentHp + actualHeal,
+                      });
+                      totalHealed += actualHeal;
+                      healResults.push(`${target.name}: +${actualHeal} HP`);
+                    }
+                  }
+                }
+
+                resultMessage = `${char.name} uses CHANNEL DIVINITY: PRESERVE LIFE! Healing distributed: ${healResults.join(", ")}.`;
+              } else {
+                // Just report the available pool
+                resultMessage = `${char.name} uses CHANNEL DIVINITY: PRESERVE LIFE! Can distribute ${healingPool} HP of healing to creatures within 30 feet (no creature above half max HP).`;
+              }
+              break;
+            }
+          }
+
+          // Consume the feature use
+          const updatedFeatures = char.features.map((f) => {
+            if (f.name === baseFeatureName && f.usesPerRest && f.usesPerRest.current > 0) {
+              return {
+                ...f,
+                usesPerRest: { ...f.usesPerRest, current: f.usesPerRest.current - 1 },
+              };
+            }
+            return f;
+          });
+          updates.features = updatedFeatures;
+
+          await updateCharacter(roomCode, characterId, updates);
+
+          await addToTranscript(roomCode, {
+            type: "combat",
+            content: resultMessage,
+          });
+
+          return { used: featureName, character: char.name };
+        },
+      },
+
+      equip_item: {
+        description: "Equip a weapon, armor, or shield from inventory",
+        inputSchema: equipItemSchema,
+        execute: async ({
+          characterId,
+          itemId,
+        }: z.infer<typeof equipItemSchema>) => {
+          const char = game.characters.find((c) => c.id === characterId);
+          if (!char) return { error: "Character not found" };
+
+          const item = char.inventory.find((i) => i.id === itemId);
+          if (!item) return { error: "Item not found in inventory" };
+
+          await setThinking(roomCode, `${char.name} equips ${item.name}...`);
+
+          const updates: Partial<Character> = {};
+          let resultMessage = "";
+
+          if (item.type === "weapon") {
+            updates.equippedWeapon = itemId;
+            resultMessage = `${char.name} equips ${item.name}.`;
+          } else if (item.type === "armor") {
+            const armorItem = item as Armor;
+            if (armorItem.armorType === "shield") {
+              updates.equippedShield = itemId;
+              resultMessage = `${char.name} equips ${item.name}.`;
+            } else {
+              updates.equippedArmor = itemId;
+              // Recalculate AC
+              const newAC = calculateAC(
+                { ...char, equippedArmor: itemId },
+                armorItem,
+                !!char.equippedShield
+              );
+              updates.armorClass = newAC;
+              resultMessage = `${char.name} equips ${item.name}. (AC: ${newAC})`;
+            }
+          } else {
+            return { error: `Cannot equip ${item.name} - not a weapon or armor` };
+          }
+
+          await updateCharacter(roomCode, characterId, updates);
+
+          await addToTranscript(roomCode, {
+            type: "system",
+            content: resultMessage,
+          });
+
+          return { equipped: item.name, character: char.name };
+        },
+      },
+
+      unequip_item: {
+        description: "Unequip a weapon, armor, or shield",
+        inputSchema: unequipItemSchema,
+        execute: async ({
+          characterId,
+          slot,
+        }: z.infer<typeof unequipItemSchema>) => {
+          const char = game.characters.find((c) => c.id === characterId);
+          if (!char) return { error: "Character not found" };
+
+          await setThinking(roomCode, `${char.name} unequips...`);
+
+          const updates: Partial<Character> = {};
+          let itemName = "";
+
+          if (slot === "weapon") {
+            if (!char.equippedWeapon) return { error: "No weapon equipped" };
+            itemName = char.inventory.find((i) => i.id === char.equippedWeapon)?.name || "weapon";
+            updates.equippedWeapon = null;
+          } else if (slot === "armor") {
+            if (!char.equippedArmor) return { error: "No armor equipped" };
+            itemName = char.inventory.find((i) => i.id === char.equippedArmor)?.name || "armor";
+            updates.equippedArmor = null;
+            // Recalculate AC (unarmored)
+            const newAC = calculateAC({ ...char, equippedArmor: null }, null, !!char.equippedShield);
+            updates.armorClass = newAC;
+          } else if (slot === "shield") {
+            if (!char.equippedShield) return { error: "No shield equipped" };
+            itemName = char.inventory.find((i) => i.id === char.equippedShield)?.name || "shield";
+            updates.equippedShield = null;
+            // Recalculate AC (without shield)
+            const currentArmor = char.equippedArmor
+              ? (char.inventory.find((i) => i.id === char.equippedArmor) as Armor | undefined)
+              : null;
+            const newAC = calculateAC({ ...char, equippedShield: null }, currentArmor || null, false);
+            updates.armorClass = newAC;
+          }
+
+          await updateCharacter(roomCode, characterId, updates);
+
+          await addToTranscript(roomCode, {
+            type: "system",
+            content: `${char.name} unequips ${itemName}.${updates.armorClass ? ` (AC: ${updates.armorClass})` : ""}`,
+          });
+
+          return { unequipped: itemName, character: char.name };
+        },
+      },
+
+      use_item: {
+        description: "Use a consumable item like a potion",
+        inputSchema: useItemSchema,
+        execute: async ({
+          characterId,
+          itemId,
+          targetId,
+        }: z.infer<typeof useItemSchema>) => {
+          const char = game.characters.find((c) => c.id === characterId);
+          if (!char) return { error: "Character not found" };
+
+          const item = char.inventory.find((i) => i.id === itemId);
+          if (!item) return { error: "Item not found in inventory" };
+
+          if (item.type !== "potion") {
+            return { error: `Cannot use ${item.name} - not a consumable` };
+          }
+
+          const target = targetId
+            ? game.characters.find((c) => c.id === targetId)
+            : char;
+          if (!target) return { error: "Target not found" };
+
+          await setThinking(roomCode, `${char.name} uses ${item.name}...`);
+
+          let resultMessage = "";
+
+          // Handle potions
+          if (itemId === "potion_healing" || item.name.toLowerCase().includes("healing")) {
+            // Healing potion: 2d4+2
+            const healRoll = roll("2d4+2");
+            const healResult = healCharacter(target, healRoll.total);
+            await updateCharacter(roomCode, target.id, { currentHp: healResult.newHp });
+            resultMessage = `${char.name} uses ${item.name}! ${target.name} heals ${healRoll.total} HP. (${healResult.newHp}/${target.maxHp} HP)`;
+          } else if (itemId === "potion_greater_healing" || item.name.toLowerCase().includes("greater healing")) {
+            // Greater Healing potion: 4d4+4
+            const healRoll = roll("4d4+4");
+            const healResult = healCharacter(target, healRoll.total);
+            await updateCharacter(roomCode, target.id, { currentHp: healResult.newHp });
+            resultMessage = `${char.name} uses ${item.name}! ${target.name} heals ${healRoll.total} HP. (${healResult.newHp}/${target.maxHp} HP)`;
+          } else {
+            resultMessage = `${char.name} uses ${item.name}.`;
+          }
+
+          // Remove item from inventory (or reduce quantity)
+          const newInventory = char.inventory
+            .map((i) => {
+              if (i.id === itemId) {
+                if (i.quantity > 1) {
+                  return { ...i, quantity: i.quantity - 1 };
+                }
+                return null; // Remove item
+              }
+              return i;
+            })
+            .filter((i): i is InventoryItem => i !== null);
+
+          await updateCharacter(roomCode, characterId, { inventory: newInventory });
+
+          await addToTranscript(roomCode, {
+            type: "system",
+            content: resultMessage,
+          });
+
+          return { used: item.name, character: char.name };
+        },
+      },
+
+      give_item: {
+        description: "Give a new item to a character",
+        inputSchema: giveItemSchema,
+        execute: async ({
+          characterId,
+          itemName,
+          itemType,
+          quantity,
+          description,
+        }: z.infer<typeof giveItemSchema>) => {
+          const char = game.characters.find((c) => c.id === characterId);
+          if (!char) return { error: "Character not found" };
+
+          await setThinking(roomCode, `${char.name} receives ${itemName}...`);
+
+          // Create new item
+          const newItem: InventoryItem = {
+            id: `${itemType}_${Date.now()}`,
+            name: itemName,
+            type: itemType,
+            quantity: quantity || 1,
+            weight: 1, // Default weight
+            description,
+          };
+
+          // Check if it's a known item from equipment database
+          const knownWeapon = Object.values(WEAPONS).find(
+            (w) => w.name.toLowerCase() === itemName.toLowerCase()
+          );
+          const knownArmor = Object.values(ARMOR).find(
+            (a) => a.name.toLowerCase() === itemName.toLowerCase()
+          );
+          const knownGear = Object.values(GEAR).find(
+            (g) => g.name.toLowerCase() === itemName.toLowerCase()
+          );
+
+          let itemToAdd: InventoryItem = newItem;
+          if (knownWeapon) {
+            itemToAdd = { ...knownWeapon, quantity: quantity || 1 };
+          } else if (knownArmor) {
+            itemToAdd = { ...knownArmor, quantity: quantity || 1 };
+          } else if (knownGear) {
+            itemToAdd = { ...knownGear, quantity: quantity || 1 };
+          }
+
+          const newInventory = [...char.inventory, itemToAdd];
+          await updateCharacter(roomCode, characterId, { inventory: newInventory });
+
+          const qtyText = (quantity || 1) > 1 ? `${quantity}x ` : "";
+          await addToTranscript(roomCode, {
+            type: "system",
+            content: `${char.name} receives ${qtyText}${itemName}.`,
+          });
+
+          return { item: itemName, character: char.name };
+        },
+      },
+
+      give_gold: {
+        description: "Give gold to a character",
+        inputSchema: giveGoldSchema,
+        execute: async ({
+          characterId,
+          amount,
+          source,
+        }: z.infer<typeof giveGoldSchema>) => {
+          const char = game.characters.find((c) => c.id === characterId);
+          if (!char) return { error: "Character not found" };
+
+          await setThinking(roomCode, `${char.name} receives gold...`);
+
+          const newGold = char.gold + amount;
+          await updateCharacter(roomCode, characterId, { gold: newGold });
+
+          await addToTranscript(roomCode, {
+            type: "system",
+            content: `${char.name} receives ${amount} gold from ${source}. (Total: ${newGold} gp)`,
+          });
+
+          return { gold: amount, newTotal: newGold, character: char.name };
+        },
+      },
+
+      end_concentration: {
+        description: "End concentration on a spell",
+        inputSchema: endConcentrationSchema,
+        execute: async ({
+          characterId,
+          reason,
+        }: z.infer<typeof endConcentrationSchema>) => {
+          const char = game.characters.find((c) => c.id === characterId);
+          if (!char) return { error: "Character not found" };
+
+          if (!char.concentrating) {
+            return { error: `${char.name} is not concentrating on any spell` };
+          }
+
+          const spell = [...Object.values(CANTRIPS), ...Object.values(SPELLS_LEVEL_1), ...Object.values(SPELLS_LEVEL_2)]
+            .find((s) => s.id === char.concentrating);
+
+          await setThinking(roomCode, `${char.name} loses concentration...`);
+
+          await updateCharacter(roomCode, characterId, { concentrating: null });
+
+          await addToTranscript(roomCode, {
+            type: "system",
+            content: `${char.name} ends concentration on ${spell?.name || "spell"} (${reason}).`,
+          });
+
+          return { ended: spell?.name || char.concentrating, character: char.name };
         },
       },
 

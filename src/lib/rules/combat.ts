@@ -168,24 +168,48 @@ export function createCombatState(
 // ============= ATTACKS =============
 
 /**
+ * Combine advantage types (advantage + disadvantage = normal)
+ */
+function combineAdvantage(base: AdvantageType, modifier: AdvantageType): AdvantageType {
+  if (base === "normal") return modifier;
+  if (modifier === "normal") return base;
+  if (base === modifier) return base;
+  // Advantage + Disadvantage cancel out
+  return "normal";
+}
+
+/**
  * Make a weapon attack against a target
  */
 export function makeAttack(
   attacker: Character,
   weaponId: string,
   targetAC: number,
-  advantage: AdvantageType = "normal"
+  advantage: AdvantageType = "normal",
+  targetConditions: Condition[] = []
 ): AttackResult {
+  // Apply attacker's condition modifiers
+  const attackerMod = getConditionAttackModifier(attacker.conditions);
+  // Apply target's condition modifiers (advantage for attacks against blinded, paralyzed, etc.)
+  const targetMod = getConditionDefenseModifier(targetConditions);
+
+  // Combine all advantage sources
+  let finalAdvantage = combineAdvantage(advantage, attackerMod);
+  finalAdvantage = combineAdvantage(finalAdvantage, targetMod);
+
   const attackBonus = getAttackBonus(attacker, weaponId);
-  const attackRoll = roll(`1d20+${attackBonus}`, advantage);
+  const attackRoll = roll(`1d20+${attackBonus}`, finalAdvantage);
 
   const hit = meetsAC(attackRoll, targetAC);
   const critical = attackRoll.isCritical;
   const fumble = attackRoll.isFumble;
 
+  // Auto-crit against paralyzed/unconscious targets within 5 feet
+  const autoCrit = hit && (targetConditions.includes("paralyzed") || targetConditions.includes("unconscious"));
+
   const result: AttackResult = {
     hit,
-    critical,
+    critical: critical || autoCrit,
     fumble,
     attackRoll,
     targetAC,
@@ -197,7 +221,7 @@ export function makeAttack(
     if (weapon) {
       const damageBonus = getDamageBonus(attacker, weaponId);
       const damageNotation = `${weapon.damage}+${damageBonus}`;
-      result.damageRoll = rollDamage(damageNotation, critical);
+      result.damageRoll = rollDamage(damageNotation, result.critical);
       result.damage = result.damageRoll.total;
       result.damageType = weapon.damageType;
     }
@@ -213,24 +237,37 @@ export function makeEnemyAttack(
   enemy: Enemy,
   attack: EnemyAttack,
   targetAC: number,
-  advantage: AdvantageType = "normal"
+  advantage: AdvantageType = "normal",
+  targetConditions: Condition[] = []
 ): AttackResult {
-  const attackRoll = roll(`1d20+${attack.attackBonus}`, advantage);
+  // Apply enemy's condition modifiers
+  const attackerMod = getConditionAttackModifier(enemy.conditions);
+  // Apply target's condition modifiers
+  const targetMod = getConditionDefenseModifier(targetConditions);
+
+  // Combine all advantage sources
+  let finalAdvantage = combineAdvantage(advantage, attackerMod);
+  finalAdvantage = combineAdvantage(finalAdvantage, targetMod);
+
+  const attackRoll = roll(`1d20+${attack.attackBonus}`, finalAdvantage);
 
   const hit = meetsAC(attackRoll, targetAC);
   const critical = attackRoll.isCritical;
   const fumble = attackRoll.isFumble;
 
+  // Auto-crit against paralyzed/unconscious targets within 5 feet
+  const autoCrit = hit && (targetConditions.includes("paralyzed") || targetConditions.includes("unconscious"));
+
   const result: AttackResult = {
     hit,
-    critical,
+    critical: critical || autoCrit,
     fumble,
     attackRoll,
     targetAC,
   };
 
   if (hit) {
-    result.damageRoll = rollDamage(attack.damage, critical);
+    result.damageRoll = rollDamage(attack.damage, result.critical);
     result.damage = result.damageRoll.total;
     result.damageType = attack.damageType;
   }

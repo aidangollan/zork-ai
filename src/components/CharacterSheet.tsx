@@ -85,11 +85,21 @@ export default function CharacterSheet({
         )}
       </div>
 
+      {/* Unconscious Banner */}
+      {character.currentHp <= 0 && (
+        <div className="bg-red-900 border border-red-600 p-2 text-center animate-pulse">
+          <div className="text-red-300 font-bold">
+            {character.deathSaves.failures >= 3 ? "DEAD" :
+             character.deathSaves.successes >= 3 ? "STABILIZED" : "UNCONSCIOUS"}
+          </div>
+        </div>
+      )}
+
       {/* HP Bar */}
       <div>
         <div className="flex justify-between text-sm mb-1">
           <span className="text-green-600">Hit Points</span>
-          <span className="text-green-400">
+          <span className={character.currentHp <= 0 ? "text-red-400" : "text-green-400"}>
             {character.currentHp} / {character.maxHp}
             {character.tempHp > 0 && (
               <span className="text-cyan-400"> (+{character.tempHp})</span>
@@ -156,16 +166,40 @@ export default function CharacterSheet({
         </div>
       )}
 
-      {/* Death Saves (only show when at 0 HP) */}
-      {character.currentHp === 0 && (
+      {/* Death Saves (only show when at 0 HP and not dead/stabilized) */}
+      {character.currentHp <= 0 && character.deathSaves.failures < 3 && character.deathSaves.successes < 3 && (
         <div className="border-t border-red-900 pt-2">
-          <div className="text-red-500 text-sm text-center">DEATH SAVES</div>
-          <div className="flex justify-center gap-4 mt-1">
-            <div className="text-green-500">
-              Successes: {character.deathSaves.successes}/3
+          <div className="text-red-500 text-sm text-center font-bold">DEATH SAVES</div>
+          <div className="flex justify-center gap-6 mt-2">
+            <div className="text-center">
+              <div className="text-green-600 text-xs mb-1">Successes</div>
+              <div className="flex gap-1">
+                {[0, 1, 2].map((i) => (
+                  <div
+                    key={`success-${i}`}
+                    className={`w-4 h-4 rounded-full border-2 ${
+                      i < character.deathSaves.successes
+                        ? "bg-green-500 border-green-400"
+                        : "border-green-700"
+                    }`}
+                  />
+                ))}
+              </div>
             </div>
-            <div className="text-red-500">
-              Failures: {character.deathSaves.failures}/3
+            <div className="text-center">
+              <div className="text-red-600 text-xs mb-1">Failures</div>
+              <div className="flex gap-1">
+                {[0, 1, 2].map((i) => (
+                  <div
+                    key={`failure-${i}`}
+                    className={`w-4 h-4 rounded-full border-2 ${
+                      i < character.deathSaves.failures
+                        ? "bg-red-500 border-red-400"
+                        : "border-red-800"
+                    }`}
+                  />
+                ))}
+              </div>
             </div>
           </div>
         </div>

@@ -4,10 +4,89 @@ import {
   Character,
   Ability,
   Skill,
+  Condition,
   getModifier,
   getSkillAbility,
 } from "../character";
 import { roll, RollResult, AdvantageType, meetsDC } from "./dice";
+
+// ============= CONDITION EFFECTS ON CHECKS =============
+
+/**
+ * Get advantage/disadvantage for ability checks based on conditions
+ */
+export function getConditionCheckModifier(conditions: Condition[], ability: Ability): AdvantageType {
+  // Poisoned: disadvantage on ability checks
+  if (conditions.includes("poisoned")) {
+    return "disadvantage";
+  }
+
+  // Frightened: disadvantage on ability checks while source of fear is visible
+  // (We'll treat this as general disadvantage for simplicity)
+  if (conditions.includes("frightened")) {
+    return "disadvantage";
+  }
+
+  // Exhaustion would add disadvantage too, but we're not tracking exhaustion levels
+
+  return "normal";
+}
+
+/**
+ * Get advantage/disadvantage for saving throws based on conditions
+ */
+export function getConditionSaveModifier(conditions: Condition[], ability: Ability): AdvantageType {
+  // Restrained: disadvantage on DEX saves
+  if (conditions.includes("restrained") && ability === "dexterity") {
+    return "disadvantage";
+  }
+
+  // Stunned/Paralyzed/Petrified: auto-fail STR and DEX saves
+  // Note: We handle this as disadvantage since we don't have auto-fail mechanic
+  if (
+    (conditions.includes("stunned") ||
+     conditions.includes("paralyzed") ||
+     conditions.includes("petrified")) &&
+    (ability === "strength" || ability === "dexterity")
+  ) {
+    return "disadvantage";
+  }
+
+  return "normal";
+}
+
+/**
+ * Check if character auto-fails certain saves due to conditions
+ */
+export function autoFailsSave(conditions: Condition[], ability: Ability): boolean {
+  // Paralyzed, Stunned, Petrified: auto-fail STR and DEX saves
+  if (
+    (conditions.includes("paralyzed") ||
+     conditions.includes("stunned") ||
+     conditions.includes("petrified")) &&
+    (ability === "strength" || ability === "dexterity")
+  ) {
+    return true;
+  }
+
+  // Unconscious: auto-fail STR and DEX saves
+  if (conditions.includes("unconscious") && (ability === "strength" || ability === "dexterity")) {
+    return true;
+  }
+
+  return false;
+}
+
+/**
+ * Combine advantage types (advantage + disadvantage = normal)
+ */
+export function combineAdvantage(base: AdvantageType, modifier: AdvantageType): AdvantageType {
+  if (base === "normal") return modifier;
+  if (modifier === "normal") return base;
+  if (base === modifier) return base;
+  // Advantage + Disadvantage cancel out
+  return "normal";
+}
 
 export interface CheckResult {
   roll: RollResult;
@@ -29,8 +108,12 @@ export function abilityCheck(
   dc: number,
   advantage: AdvantageType = "normal"
 ): CheckResult {
+  // Apply condition modifiers
+  const conditionMod = getConditionCheckModifier(character.conditions, ability);
+  const finalAdvantage = combineAdvantage(advantage, conditionMod);
+
   const modifier = getModifier(character.abilities[ability]);
-  const rollResult = roll(`1d20+${modifier}`, advantage);
+  const rollResult = roll(`1d20+${modifier}`, finalAdvantage);
 
   return {
     roll: rollResult,
@@ -53,6 +136,11 @@ export function skillCheck(
   advantage: AdvantageType = "normal"
 ): CheckResult {
   const ability = getSkillAbility(skill);
+
+  // Apply condition modifiers
+  const conditionMod = getConditionCheckModifier(character.conditions, ability);
+  const finalAdvantage = combineAdvantage(advantage, conditionMod);
+
   const abilityMod = getModifier(character.abilities[ability]);
   const proficient = character.skills.includes(skill);
   const profBonus = proficient ? character.proficiencyBonus : 0;
@@ -63,7 +151,7 @@ export function skillCheck(
   const totalProfBonus = hasExpertise ? profBonus * 2 : profBonus;
 
   const modifier = abilityMod + totalProfBonus;
-  const rollResult = roll(`1d20+${modifier}`, advantage);
+  const rollResult = roll(`1d20+${modifier}`, finalAdvantage);
 
   return {
     roll: rollResult,
@@ -86,12 +174,29 @@ export function savingThrow(
   dc: number,
   advantage: AdvantageType = "normal"
 ): CheckResult {
+  // Check for auto-fail conditions (paralyzed, stunned, etc.)
+  if (autoFailsSave(character.conditions, ability)) {
+    return {
+      roll: { total: 0, rolls: [0], modifier: 0, natural: 0, isCritical: false, isFumble: false },
+      modifier: 0,
+      total: 0,
+      success: false,
+      dc,
+      ability,
+      proficient: character.savingThrows.includes(ability),
+    };
+  }
+
+  // Apply condition modifiers
+  const conditionMod = getConditionSaveModifier(character.conditions, ability);
+  const finalAdvantage = combineAdvantage(advantage, conditionMod);
+
   const abilityMod = getModifier(character.abilities[ability]);
   const proficient = character.savingThrows.includes(ability);
   const profBonus = proficient ? character.proficiencyBonus : 0;
 
   const modifier = abilityMod + profBonus;
-  const rollResult = roll(`1d20+${modifier}`, advantage);
+  const rollResult = roll(`1d20+${modifier}`, finalAdvantage);
 
   return {
     roll: rollResult,
