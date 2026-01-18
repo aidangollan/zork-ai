@@ -13,7 +13,9 @@ import { Character, Ability, Skill, DamageType, Spell, getProficiencyBonus, getL
 import { skillCheck, abilityCheck, savingThrow, getSpellSaveDC } from "./rules/abilities";
 import { createEnemyGroup } from "./rules/enemies";
 import { CANTRIPS, SPELLS_LEVEL_1, SPELLS_LEVEL_2, canCastSpell, useSpellSlot, rollSpellDamage } from "./rules/spells";
-import { CLASSES, getMaxHp, getSpellSlots, getFeaturesAtLevel } from "./rules/classes";
+import { CLASSES, getMaxHp, getSpellSlots, getFeaturesAtLevel, getSneakAttackDice } from "./rules/classes";
+import { WEAPONS, isFinesse, isRanged } from "./rules/equipment";
+import { roll } from "./rules/dice";
 import {
   createCombatState,
   rollInitiative,
@@ -82,6 +84,7 @@ TOOLS:
 - apply_damage: When dealing damage to characters
 - heal: When healing characters
 - level_up: When a character has enough XP to level up
+- rest: When party takes a short or long rest
 - speak_as_npc: When NPCs talk (use their voice!)
 - start_combat: When combat begins
 - end_combat: When combat ends
@@ -151,6 +154,11 @@ const castSpellSchema = z.object({
 
 const levelUpSchema = z.object({
   characterId: z.string().describe("ID of the character to level up"),
+});
+
+const restSchema = z.object({
+  restType: z.enum(["short", "long"]).describe("Type of rest"),
+  hitDiceToSpend: z.number().optional().describe("Number of hit dice to spend during short rest (max = level)"),
 });
 
 export async function runDM(
@@ -286,17 +294,38 @@ ${characterContext}`;
             targetAC
           );
 
-          const resultText = formatAttackResult(attacker.name, target.name, attackResult);
+          let totalDamage = attackResult.damage || 0;
+          let sneakAttackDamage = 0;
+
+          // Check for Sneak Attack (Rogues only)
+          if (attackResult.hit && attacker.class === "rogue") {
+            const weapon = WEAPONS[weaponId as keyof typeof WEAPONS];
+            const weaponIsEligible = weapon && (isFinesse(weapon) || isRanged(weapon));
+            const hasAllyAdjacent = game.characters.length > 1; // Simplified: assume ally is nearby in combat
+
+            if (weaponIsEligible && hasAllyAdjacent) {
+              const sneakDice = getSneakAttackDice(attacker.level);
+              const sneakRoll = roll(sneakDice);
+              sneakAttackDamage = sneakRoll.total;
+              totalDamage += sneakAttackDamage;
+            }
+          }
+
+          let resultText = formatAttackResult(attacker.name, target.name, attackResult);
+          if (sneakAttackDamage > 0) {
+            resultText += ` SNEAK ATTACK! +${sneakAttackDamage} damage!`;
+          }
+
           await addToTranscript(roomCode, {
             type: "combat",
             content: resultText,
           });
 
           // Apply damage if hit
-          if (attackResult.hit && attackResult.damage && targetEnemy) {
+          if (attackResult.hit && totalDamage > 0 && targetEnemy) {
             const damageResult = applyDamageToEnemy(
               targetEnemy,
-              attackResult.damage,
+              totalDamage,
               attackResult.damageType || "slashing"
             );
 
@@ -567,6 +596,95 @@ ${characterContext}`;
           });
 
           return { newLevel, hpIncrease, newFeatures: newFeatures.map((f) => f.name) };
+        },
+      },
+
+      rest: {
+        description: "Take a short or long rest to recover resources",
+        inputSchema: restSchema,
+        execute: async ({
+          restType,
+          hitDiceToSpend,
+        }: z.infer<typeof restSchema>) => {
+          await setThinking(roomCode, `The party takes a ${restType} rest...`);
+
+          const results: string[] = [];
+
+          for (const char of game.characters) {
+            const classData = CLASSES[char.class];
+            let healedAmount = 0;
+
+            if (restType === "short") {
+              // Short rest: spend hit dice to heal
+              const diceToSpend = Math.min(hitDiceToSpend || 1, char.hitDice.current);
+              if (diceToSpend > 0) {
+                const hitDieSize = parseInt(classData.hitDie.replace("d", ""));
+                const conMod = getModifier(char.abilities.constitution);
+
+                for (let i = 0; i < diceToSpend; i++) {
+                  const roll = Math.floor(Math.random() * hitDieSize) + 1;
+                  healedAmount += Math.max(1, roll + conMod);
+                }
+
+                const newHp = Math.min(char.maxHp, char.currentHp + healedAmount);
+                const newHitDice = { ...char.hitDice, current: char.hitDice.current - diceToSpend };
+
+                await updateCharacter(roomCode, char.id, {
+                  currentHp: newHp,
+                  hitDice: newHitDice,
+                });
+
+                results.push(`${char.name} spends ${diceToSpend} hit dice, heals ${healedAmount} HP (${newHp}/${char.maxHp})`);
+              }
+
+              // Reset short rest features (Second Wind, Action Surge)
+              const updatedFeatures = char.features.map((f) => {
+                if (f.usesPerRest?.restType === "short" && f.usesPerRest.current < f.usesPerRest.max) {
+                  return { ...f, usesPerRest: { ...f.usesPerRest, current: f.usesPerRest.max } };
+                }
+                return f;
+              });
+              await updateCharacter(roomCode, char.id, { features: updatedFeatures });
+
+            } else {
+              // Long rest: full HP, recover half hit dice, restore all spell slots and features
+              const halfHitDice = Math.max(1, Math.floor(char.level / 2));
+              const newHitDiceCurrent = Math.min(char.level, char.hitDice.current + halfHitDice);
+
+              // Restore spell slots
+              const newSpellSlots = getSpellSlots(char.class, char.level);
+
+              // Reset all features
+              const updatedFeatures = char.features.map((f) => {
+                if (f.usesPerRest) {
+                  return { ...f, usesPerRest: { ...f.usesPerRest, current: f.usesPerRest.max } };
+                }
+                return f;
+              });
+
+              await updateCharacter(roomCode, char.id, {
+                currentHp: char.maxHp,
+                hitDice: { ...char.hitDice, current: newHitDiceCurrent },
+                spellSlots: newSpellSlots,
+                features: updatedFeatures,
+                conditions: [], // Clear most conditions
+              });
+
+              results.push(`${char.name} fully rests (${char.maxHp} HP, spell slots restored)`);
+            }
+          }
+
+          const restMessage = `${restType.toUpperCase()} REST COMPLETE\n${results.join("\n")}`;
+
+          await addToTranscript(roomCode, {
+            type: "system",
+            content: restMessage,
+          });
+
+          // Update phase
+          await updateGame(roomCode, { phase: "exploration" });
+
+          return { restType, results };
         },
       },
 

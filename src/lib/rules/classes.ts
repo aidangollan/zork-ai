@@ -226,16 +226,31 @@ export function getSpellSlots(characterClass: CharacterClass, level: number): Sp
     return slots; // Non-casters have no spell slots
   }
 
-  // Full caster spell slot progression (Wizard and Cleric)
+  // Full caster spell slot progression (Wizard and Cleric) - D&D 5e PHB
   const slotProgression: Record<number, number[]> = {
     1: [2],
     2: [3],
     3: [4, 2],
     4: [4, 3],
     5: [4, 3, 2],
+    6: [4, 3, 3],
+    7: [4, 3, 3, 1],
+    8: [4, 3, 3, 2],
+    9: [4, 3, 3, 3, 1],
+    10: [4, 3, 3, 3, 2],
+    11: [4, 3, 3, 3, 2, 1],
+    12: [4, 3, 3, 3, 2, 1],
+    13: [4, 3, 3, 3, 2, 1, 1],
+    14: [4, 3, 3, 3, 2, 1, 1],
+    15: [4, 3, 3, 3, 2, 1, 1, 1],
+    16: [4, 3, 3, 3, 2, 1, 1, 1],
+    17: [4, 3, 3, 3, 2, 1, 1, 1, 1],
+    18: [4, 3, 3, 3, 3, 1, 1, 1, 1],
+    19: [4, 3, 3, 3, 3, 2, 1, 1, 1],
+    20: [4, 3, 3, 3, 3, 2, 2, 1, 1],
   };
 
-  const levelSlots = slotProgression[Math.min(level, 5)] || [2];
+  const levelSlots = slotProgression[Math.min(level, 20)] || [2];
 
   levelSlots.forEach((count, index) => {
     const slotLevel = (index + 1) as keyof SpellSlots;

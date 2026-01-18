@@ -11,9 +11,10 @@ import {
   createEmptySpellSlots,
   Armor,
 } from "@/lib/character";
-import { CLASSES, getMaxHp } from "@/lib/rules/classes";
+import { CLASSES, getMaxHp, getSpellSlots } from "@/lib/rules/classes";
 import { RACES, applyRacialBonuses } from "@/lib/rules/races";
 import { getStartingEquipment } from "@/lib/rules/equipment";
+import { getStartingCantrips, getStartingSpells } from "@/lib/rules/spells";
 
 interface CharacterCreationProps {
   playerId: string;
@@ -122,10 +123,10 @@ export default function CharacterCreation({
       equippedShield: null,
       gold: 15,
       spellcastingAbility: classData.spellcastingAbility || null,
-      spellSlots: createEmptySpellSlots(),
-      knownSpells: [],
+      spellSlots: classData.spellcastingAbility ? getSpellSlots(selectedClass, 1) : createEmptySpellSlots(),
+      knownSpells: (selectedClass === "wizard" || selectedClass === "cleric") ? getStartingSpells(selectedClass) : [],
       preparedSpells: [],
-      cantripsKnown: [],
+      cantripsKnown: (selectedClass === "wizard" || selectedClass === "cleric") ? getStartingCantrips(selectedClass) : [],
       features: classData.features.filter((f) => f.level <= 1),
       conditions: [],
       deathSaves: { successes: 0, failures: 0 },

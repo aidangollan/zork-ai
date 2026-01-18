@@ -52,24 +52,4 @@ export const CHARACTERS: Record<string, { name: string; voice: string; secret: s
   },
 };
 
-// RULES BRAIN - dice
-export function rollDice(notation: string): { rolls: number[]; total: number; crit: boolean } {
-  const match = notation.match(/(\d+)d(\d+)([+-]\d+)?/);
-  if (!match) return { rolls: [0], total: 0, crit: false };
-
-  const [, count, sides, mod] = match;
-  const rolls: number[] = [];
-  for (let i = 0; i < parseInt(count); i++) {
-    rolls.push(Math.floor(Math.random() * parseInt(sides)) + 1);
-  }
-  const total = rolls.reduce((a, b) => a + b, 0) + (parseInt(mod) || 0);
-  const crit = parseInt(sides) === 20 && (rolls[0] === 20 || rolls[0] === 1);
-
-  return { rolls, total, crit };
-}
-
-export function skillCheck(difficulty: "easy" | "medium" | "hard"): { roll: number; dc: number; success: boolean } {
-  const DCs = { easy: 10, medium: 15, hard: 20 };
-  const roll = Math.floor(Math.random() * 20) + 1;
-  return { roll, dc: DCs[difficulty], success: roll >= DCs[difficulty] };
-}
+// Note: Dice rolling and skill checks are now in src/lib/rules/dice.ts and src/lib/rules/abilities.ts

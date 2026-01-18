@@ -202,6 +202,76 @@ export default function CharacterSheet({
         </div>
       </div>
 
+      {/* Spell Slots (for casters) */}
+      {character.spellcastingAbility && (
+        <div className="border-t border-green-900 pt-2 text-sm">
+          <div className="text-green-700 text-xs mb-1">SPELL SLOTS</div>
+          <div className="flex flex-wrap gap-1">
+            {([1, 2, 3, 4, 5] as const).map((level) => {
+              const slot = character.spellSlots[level];
+              if (!slot || slot.max === 0) return null;
+              return (
+                <div key={level} className="text-xs">
+                  <span className="text-green-600">L{level}:</span>{" "}
+                  <span className={slot.current > 0 ? "text-cyan-400" : "text-red-500"}>
+                    {slot.current}/{slot.max}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* Cantrips */}
+      {character.cantripsKnown && character.cantripsKnown.length > 0 && (
+        <div className="border-t border-green-900 pt-2 text-sm">
+          <div className="text-green-700 text-xs mb-1">CANTRIPS</div>
+          <div className="text-purple-400 text-xs">
+            {character.cantripsKnown.map((s) => s.name).join(", ")}
+          </div>
+        </div>
+      )}
+
+      {/* Known Spells */}
+      {character.knownSpells && character.knownSpells.length > 0 && (
+        <div className="border-t border-green-900 pt-2 text-sm">
+          <div className="text-green-700 text-xs mb-1">SPELLS</div>
+          <div className="text-blue-400 text-xs">
+            {character.knownSpells.map((s) => s.name).join(", ")}
+          </div>
+        </div>
+      )}
+
+      {/* Class Features */}
+      {character.features && character.features.length > 0 && (
+        <div className="border-t border-green-900 pt-2 text-sm">
+          <div className="text-green-700 text-xs mb-1">FEATURES</div>
+          <div className="space-y-1">
+            {character.features.map((f) => (
+              <div key={f.name} className="text-xs">
+                <span className="text-amber-400">{f.name}</span>
+                {f.usesPerRest && (
+                  <span className="text-green-600 ml-1">
+                    ({f.usesPerRest.current}/{f.usesPerRest.max})
+                  </span>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Hit Dice */}
+      <div className="border-t border-green-900 pt-2 text-sm">
+        <div className="flex justify-between">
+          <span className="text-green-700">Hit Dice</span>
+          <span className="text-green-500">
+            {character.hitDice.current}/{character.hitDice.total} {character.hitDice.die}
+          </span>
+        </div>
+      </div>
+
       {/* Gold */}
       <div className="flex justify-between text-sm">
         <span className="text-green-700">Gold</span>
