@@ -9,7 +9,7 @@ import {
   updateCharacter,
   updateGame,
 } from "./game-state";
-import { Character, Ability, Skill, DamageType, Spell, InventoryItem, Armor, calculateAC, getProficiencyBonus, getLevelFromXp, getModifier } from "./character";
+import { Character, Ability, Skill, DamageType, Spell, InventoryItem, Armor, Condition, calculateAC, getProficiencyBonus, getLevelFromXp, getModifier } from "./character";
 import { skillCheck, abilityCheck, savingThrow, getSpellSaveDC } from "./rules/abilities";
 import { createEnemyGroup } from "./rules/enemies";
 import { CANTRIPS, SPELLS_LEVEL_1, SPELLS_LEVEL_2, canCastSpell, useSpellSlot, rollSpellDamage } from "./rules/spells";
@@ -463,6 +463,24 @@ ${characterContext}`;
                 type: "combat",
                 content: `${target.name} is defeated!`,
               });
+
+              // Remove dead enemy from initiative order
+              if (game.combat) {
+                game.combat.initiativeOrder = game.combat.initiativeOrder.filter(
+                  (i) => i.id !== targetId
+                );
+                await updateGame(roomCode, { combat: game.combat });
+
+                // Check if all enemies are dead - end combat
+                const remainingEnemies = game.combat.enemies.filter((e) => e.currentHp > 0);
+                if (remainingEnemies.length === 0) {
+                  await addToTranscript(roomCode, {
+                    type: "system",
+                    content: "All enemies have been defeated! Combat ends.",
+                  });
+                  await updateGame(roomCode, { combat: null, phase: "exploration" });
+                }
+              }
             }
           }
 
@@ -567,6 +585,19 @@ ${characterContext}`;
 
               if (damageResult.dead) {
                 resultText += ` ${enemy.name} is defeated!`;
+
+                // Remove dead enemy from initiative order
+                game.combat.initiativeOrder = game.combat.initiativeOrder.filter(
+                  (i) => i.id !== targetId
+                );
+                await updateGame(roomCode, { combat: game.combat });
+
+                // Check if all enemies are dead - end combat
+                const remainingEnemies = game.combat.enemies.filter((e) => e.currentHp > 0);
+                if (remainingEnemies.length === 0) {
+                  resultText += " All enemies have been defeated! Combat ends.";
+                  await updateGame(roomCode, { combat: null, phase: "exploration" });
+                }
               }
             }
           }
@@ -646,6 +677,10 @@ ${characterContext}`;
             statusText = ` ${char.name} falls unconscious!`;
             // Reset death saves when first falling unconscious
             updates.deathSaves = { successes: 0, failures: 0 };
+            // Add unconscious and prone conditions (per D&D 5e rules)
+            const newConditions: Condition[] = char.conditions.filter(c => c !== "unconscious" && c !== "prone");
+            newConditions.push("unconscious", "prone");
+            updates.conditions = newConditions;
             // End concentration when falling unconscious
             if (char.concentrating) {
               updates.concentrating = null;
@@ -691,15 +726,28 @@ ${characterContext}`;
 
           await setThinking(roomCode, `${char.name} is healed...`);
 
+          const wasUnconscious = char.currentHp === 0;
           const result = healCharacter(char, amount);
 
-          await updateCharacter(roomCode, characterId, {
+          const updates: Partial<Character> = {
             currentHp: result.newHp,
-          });
+          };
+
+          let statusText = "";
+
+          // Remove unconscious condition if character regains consciousness
+          if (wasUnconscious && result.newHp > 0) {
+            updates.conditions = char.conditions.filter(c => c !== "unconscious");
+            // Reset death saves when regaining consciousness
+            updates.deathSaves = { successes: 0, failures: 0 };
+            statusText = ` ${char.name} regains consciousness!`;
+          }
+
+          await updateCharacter(roomCode, characterId, updates);
 
           await addToTranscript(roomCode, {
             type: "system",
-            content: `${char.name} heals ${amount} HP from ${source}. (${result.newHp}/${char.maxHp} HP)`,
+            content: `${char.name} heals ${amount} HP from ${source}. (${result.newHp}/${char.maxHp} HP)${statusText}`,
           });
 
           return result;
@@ -739,10 +787,12 @@ ${characterContext}`;
             },
           };
 
-          // Natural 20: regain 1 HP
+          // Natural 20: regain 1 HP and wake up
           if (result.critical) {
             updates.currentHp = 1;
             updates.deathSaves = { successes: 0, failures: 0 }; // Reset on recovery
+            // Remove unconscious condition (keep prone - they're still on the ground)
+            updates.conditions = char.conditions.filter(c => c !== "unconscious");
           }
 
           await updateCharacter(roomCode, characterId, updates);

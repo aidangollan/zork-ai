@@ -24,10 +24,17 @@ interface CharacterCreationProps {
 type Step = "name" | "class" | "race" | "stats" | "confirm";
 
 const CLASS_ICONS: Record<CharacterClass, string> = {
-  fighter: "[ ]",
-  wizard: "{*}",
-  rogue: "</>",
-  cleric: "(+)",
+  fighter: "/-+",
+  wizard: "~*~",
+  rogue: "-->",
+  cleric: "-|-",
+};
+
+const CLASS_SHORT_DESC: Record<CharacterClass, string> = {
+  fighter: "Tanky melee warrior. High HP, heavy armor, lots of attacks.",
+  wizard: "Powerful spellcaster. Low HP but devastating magic.",
+  rogue: "Stealthy striker. Sneak Attack for massive single-target damage.",
+  cleric: "Divine healer. Healing spells, good armor, support magic.",
 };
 
 const RACE_ICONS: Record<Race, string> = {
@@ -35,6 +42,22 @@ const RACE_ICONS: Record<Race, string> = {
   elf: "[E]",
   dwarf: "[D]",
   halfling: "[h]",
+};
+
+const RACE_SHORT_DESC: Record<Race, string> = {
+  human: "Versatile. +1 to all stats. Good for any class.",
+  elf: "Graceful. Darkvision, charm resistance, bonus cantrip. Great for Wizard/Rogue.",
+  dwarf: "Sturdy. Darkvision, poison resistance, extra HP. Great for Fighter/Cleric.",
+  halfling: "Lucky. Reroll natural 1s, brave, nimble. Great for Rogue.",
+};
+
+const ABILITY_NAMES: Record<string, string> = {
+  strength: "STR",
+  dexterity: "DEX",
+  constitution: "CON",
+  intelligence: "INT",
+  wisdom: "WIS",
+  charisma: "CHA",
 };
 
 export default function CharacterCreation({
@@ -205,11 +228,14 @@ export default function CharacterCreation({
               }`}
             >
               <div className="flex items-center gap-2 text-green-300">
-                <span className="text-green-600">{CLASS_ICONS[cls]}</span>
+                <span className="text-green-600 font-mono">{CLASS_ICONS[cls]}</span>
                 <span className="font-bold">{data.displayName}</span>
+                <span className="text-green-600 text-xs ml-auto">
+                  d{data.hitDie} HP | {ABILITY_NAMES[data.primaryAbility]}
+                </span>
               </div>
-              <div className="text-green-600 text-sm mt-1">
-                HP: d{data.hitDie} | {data.description.slice(0, 60)}...
+              <div className="text-green-500 text-sm mt-1">
+                {CLASS_SHORT_DESC[cls]}
               </div>
             </button>
           );
@@ -256,12 +282,10 @@ export default function CharacterCreation({
               <div className="flex items-center gap-2 text-green-300">
                 <span className="text-green-600">{RACE_ICONS[race]}</span>
                 <span className="font-bold">{data.displayName}</span>
+                <span className="text-green-600 text-xs ml-auto">{bonuses}</span>
               </div>
-              <div className="text-green-600 text-sm mt-1">
-                {bonuses} | Speed: {data.speed} ft.
-              </div>
-              <div className="text-green-700 text-xs mt-1">
-                {data.traits.map((t) => t.name).join(", ")}
+              <div className="text-green-500 text-sm mt-1">
+                {RACE_SHORT_DESC[race]}
               </div>
             </button>
           );

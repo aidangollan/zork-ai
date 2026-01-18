@@ -12,6 +12,7 @@ interface Entry {
   content: string;
   speaker?: string;
   characterId?: string;
+  ts: number;
 }
 
 interface Player {
@@ -40,7 +41,7 @@ interface GameState {
   lastUpdate: number;
 }
 
-type ViewState = "loading" | "join" | "character_creation" | "game";
+type ViewState = "loading" | "join" | "intro" | "character_creation" | "how_to_play" | "game";
 
 export default function Room() {
   const { code } = useParams<{ code: string }>();
@@ -51,6 +52,8 @@ export default function Room() {
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [showSheet, setShowSheet] = useState(true);
+  const [seenIntro, setSeenIntro] = useState(false);
+  const [seenHowToPlay, setSeenHowToPlay] = useState(false);
   const termRef = useRef<HTMLDivElement>(null);
   const lastUpdate = useRef(0);
 
@@ -62,13 +65,19 @@ export default function Room() {
 
   // Determine view state based on game state and player
   const determineViewState = useCallback(
-    (gameData: GameState, pid: string | null): ViewState => {
+    (gameData: GameState, pid: string | null, introSeen: boolean, howToPlaySeen: boolean): ViewState => {
       if (!pid) return "join";
 
       const player = gameData.players.find((p) => p.id === pid);
       if (!player) return "join";
 
+      // Show intro after joining but before character creation
+      if (!introSeen) return "intro";
+
       if (!player.characterId) return "character_creation";
+
+      // Show how-to-play after character creation
+      if (!howToPlaySeen) return "how_to_play";
 
       return "game";
     },
@@ -92,7 +101,7 @@ export default function Room() {
         if (data.lastUpdate !== lastUpdate.current) {
           setGame(data);
           lastUpdate.current = data.lastUpdate;
-          setViewState(determineViewState(data, playerId));
+          setViewState(determineViewState(data, playerId, seenIntro, seenHowToPlay));
         }
       } catch (e) {
         console.error(e);
@@ -102,14 +111,14 @@ export default function Room() {
     poll();
     const interval = setInterval(poll, 2000);
     return () => clearInterval(interval);
-  }, [code, playerId, determineViewState]);
+  }, [code, playerId, seenIntro, seenHowToPlay, determineViewState]);
 
-  // Update view state when playerId changes
+  // Update view state when playerId or seen states change
   useEffect(() => {
     if (game) {
-      setViewState(determineViewState(game, playerId));
+      setViewState(determineViewState(game, playerId, seenIntro, seenHowToPlay));
     }
-  }, [game, playerId, determineViewState]);
+  }, [game, playerId, seenIntro, seenHowToPlay, determineViewState]);
 
   // Auto-scroll transcript
   useEffect(() => {
@@ -270,9 +279,153 @@ export default function Room() {
     );
   }
 
+  if (viewState === "intro") {
+    return (
+      <div className="min-h-screen bg-black text-green-400 font-mono flex items-center justify-center p-4">
+        <div className="max-w-2xl w-full space-y-6">
+          <div className="text-center space-y-2">
+            <div className="text-3xl text-green-300">Welcome to ZORK-DM</div>
+            <div className="text-green-600">An AI-Powered D&D 5e Adventure</div>
+          </div>
+
+          <div className="border border-green-800 p-6 space-y-4">
+            <div className="text-green-300 text-lg">What is this?</div>
+            <p className="text-green-500 leading-relaxed">
+              ZORK-DM is a text-based D&D 5th Edition game powered by AI. An AI Dungeon Master
+              runs the adventure, controls NPCs, manages combat, and responds to your actions
+              in real-time.
+            </p>
+
+            <div className="text-green-300 text-lg mt-4">How it works:</div>
+            <ul className="text-green-500 space-y-2 list-disc list-inside">
+              <li>Create a character (Fighter, Wizard, Rogue, or Cleric)</li>
+              <li>Type what you want to do in natural language</li>
+              <li>The AI DM narrates the story and handles all dice rolls</li>
+              <li>Explore, fight monsters, cast spells, and roleplay!</li>
+            </ul>
+
+            <div className="text-green-300 text-lg mt-4">Combat & Rolls:</div>
+            <ul className="text-green-500 space-y-2 list-disc list-inside">
+              <li>Roll d20 + modifiers for attacks and ability checks</li>
+              <li>Natural 20 = critical hit (double damage dice)</li>
+              <li>Natural 1 = automatic miss</li>
+            </ul>
+
+            <div className="text-green-300 text-lg mt-4">Death & Recovery:</div>
+            <ul className="text-green-500 space-y-2 list-disc list-inside">
+              <li>At 0 HP, you fall unconscious and start making death saves</li>
+              <li>Each turn: roll d20. 10+ = success, 9 or less = failure</li>
+              <li>3 successes = stabilized. 3 failures = death</li>
+              <li>Natural 1 = 2 failures. Natural 20 = wake up with 1 HP!</li>
+              <li>Allies can heal you or use Medicine to stabilize you</li>
+            </ul>
+
+            <div className="text-green-300 text-lg mt-4">Resting:</div>
+            <ul className="text-green-500 space-y-2 list-disc list-inside">
+              <li><span className="text-green-300">Short Rest (1 hour):</span> Spend Hit Dice to heal</li>
+              <li><span className="text-green-300">Long Rest (8 hours):</span> Restore all HP and spell slots</li>
+              <li>Say &quot;take a short rest&quot; or &quot;long rest&quot; when safe</li>
+            </ul>
+          </div>
+
+          <button
+            onClick={() => setSeenIntro(true)}
+            className="w-full py-3 border border-green-700 hover:bg-green-900/30 text-green-400"
+          >
+            [ CREATE YOUR CHARACTER ]
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   if (viewState === "character_creation") {
     return (
       <CharacterCreation playerId={playerId!} onComplete={handleCharacterCreate} />
+    );
+  }
+
+  if (viewState === "how_to_play") {
+    return (
+      <div className="min-h-screen bg-black text-green-400 font-mono flex items-center justify-center p-4">
+        <div className="max-w-2xl w-full space-y-6">
+          <div className="text-center space-y-2">
+            <div className="text-2xl text-green-300">How to Play</div>
+            <div className="text-green-600">
+              {currentCharacter?.name} the {currentCharacter?.race} {currentCharacter?.class}
+            </div>
+          </div>
+
+          <div className="border border-green-800 p-6 space-y-4">
+            <div className="text-green-300">Type commands in natural language:</div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
+              <div className="space-y-2">
+                <div className="text-amber-400">Exploration:</div>
+                <ul className="text-green-500 space-y-1">
+                  <li>&quot;Look around&quot;</li>
+                  <li>&quot;Search the room&quot;</li>
+                  <li>&quot;Open the door&quot;</li>
+                  <li>&quot;Talk to the innkeeper&quot;</li>
+                </ul>
+              </div>
+
+              <div className="space-y-2">
+                <div className="text-red-400">Combat:</div>
+                <ul className="text-green-500 space-y-1">
+                  <li>&quot;Attack the goblin with my sword&quot;</li>
+                  <li>&quot;Cast fire bolt at the skeleton&quot;</li>
+                  <li>&quot;Dodge&quot;</li>
+                  <li>&quot;Use Second Wind&quot;</li>
+                </ul>
+              </div>
+
+              <div className="space-y-2">
+                <div className="text-cyan-400">Spellcasting:</div>
+                <ul className="text-green-500 space-y-1">
+                  <li>&quot;Cast cure wounds on myself&quot;</li>
+                  <li>&quot;Cast magic missile&quot;</li>
+                  <li>&quot;Use my cantrip fire bolt&quot;</li>
+                </ul>
+              </div>
+
+              <div className="space-y-2">
+                <div className="text-purple-400">Social:</div>
+                <ul className="text-green-500 space-y-1">
+                  <li>&quot;Persuade the guard to let us pass&quot;</li>
+                  <li>&quot;Intimidate the bandit&quot;</li>
+                  <li>&quot;Ask about the Crimson Citadel&quot;</li>
+                </ul>
+              </div>
+            </div>
+
+            <div className="border-t border-green-800 pt-4 mt-4">
+              <div className="text-green-300 mb-2">Your Character Sheet:</div>
+              <div className="text-green-500 text-sm">
+                The right sidebar shows your HP, AC, abilities, spells, and inventory.
+                The AI tracks everything automatically - just focus on roleplaying!
+              </div>
+            </div>
+
+            <div className="border-t border-green-800 pt-4 mt-4">
+              <div className="text-green-300 mb-2">Quick Tips:</div>
+              <ul className="text-green-500 text-sm space-y-1 list-disc list-inside">
+                <li>At 0 HP? The DM handles death saves - your allies can heal or stabilize you</li>
+                <li>Low on HP? Say &quot;take a short rest&quot; to spend hit dice and heal</li>
+                <li>Out of spell slots? A long rest restores everything</li>
+                <li>In combat, you can move AND take an action each turn</li>
+              </ul>
+            </div>
+          </div>
+
+          <button
+            onClick={() => setSeenHowToPlay(true)}
+            className="w-full py-3 border border-green-700 hover:bg-green-900/30 text-green-400"
+          >
+            [ BEGIN ADVENTURE ]
+          </button>
+        </div>
+      </div>
     );
   }
 
@@ -316,11 +469,26 @@ export default function Room() {
       <div className="flex-1 flex overflow-hidden">
         {/* Transcript */}
         <div className="flex-1 flex flex-col">
+          {/* Waiting for other players to create characters */}
+          {game && game.players.length > 1 && (() => {
+            const playersWithoutChars = game.players.filter(p => !p.characterId);
+            if (playersWithoutChars.length > 0) {
+              return (
+                <div className="bg-yellow-900/30 border-b border-yellow-800 px-4 py-2 text-yellow-400 text-sm">
+                  Waiting for {playersWithoutChars.map(p => p.name).join(", ")} to create {playersWithoutChars.length === 1 ? "a character" : "characters"}...
+                </div>
+              );
+            }
+            return null;
+          })()}
           <div ref={termRef} className="flex-1 overflow-y-auto p-4 space-y-3">
-            {game?.transcript.map((e) => (
+            {game?.transcript.map((e) => {
+              const time = new Date(e.ts);
+              const timeStr = time.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+              return (
               <div
                 key={e.id}
-                className={
+                className={`flex gap-2 ${
                   e.type === "player"
                     ? "text-amber-400"
                     : e.type === "dice"
@@ -332,19 +500,23 @@ export default function Room() {
                     : e.type === "system"
                     ? "text-purple-400"
                     : "text-green-400"
-                }
+                }`}
               >
-                {e.type === "npc" && e.speaker && (
-                  <span className="text-yellow-500">{e.speaker}: </span>
-                )}
-                {e.type === "player" && e.characterId && (
-                  <span className="text-amber-600">
-                    [{game.characters.find((c) => c.id === e.characterId)?.name || "Player"}]:{" "}
-                  </span>
-                )}
-                <span className="whitespace-pre-wrap">{e.content}</span>
+                <span className="text-green-800 text-xs shrink-0 pt-0.5">{timeStr}</span>
+                <span className="flex-1">
+                  {e.type === "npc" && e.speaker && (
+                    <span className="text-yellow-500">{e.speaker}: </span>
+                  )}
+                  {e.type === "player" && e.characterId && (
+                    <span className="text-amber-600">
+                      [{game.characters.find((c) => c.id === e.characterId)?.name || "Player"}]:{" "}
+                    </span>
+                  )}
+                  <span className="whitespace-pre-wrap">{e.content}</span>
+                </span>
               </div>
-            ))}
+              );
+            })}
 
             {thinking && (
               <div className="text-green-600 animate-pulse">{thinking}</div>
@@ -356,13 +528,28 @@ export default function Room() {
           </div>
 
           {/* Combat Tracker (when in combat) */}
-          {game?.phase === "combat" && game.combat && (
+          {game?.phase === "combat" && game.combat && (() => {
+            const currentCombatant = game.combat.initiativeOrder?.[game.combat.turnIndex];
+            const isMyTurn = game.currentTurn === currentCharacter?.id;
+            const currentTurnChar = game.characters.find(c => c.id === currentCombatant?.id);
+            const currentTurnPlayer = currentTurnChar
+              ? game.players.find(p => p.characterId === currentTurnChar.id)
+              : null;
+            const isEnemyTurn = currentCombatant && !game.characters.some(c => c.id === currentCombatant.id);
+
+            return (
             <div className="border-t border-red-900 p-3 bg-red-950/30 space-y-2">
               <div className="flex justify-between items-center">
                 <div className="text-red-400 text-sm font-bold">⚔ COMBAT - Round {game.combat.round || 1}</div>
-                {game.currentTurn === currentCharacter?.id && (
-                  <span className="text-amber-400 text-xs animate-pulse">YOUR TURN</span>
-                )}
+                {isMyTurn ? (
+                  <span className="text-amber-400 text-sm animate-pulse font-bold">YOUR TURN!</span>
+                ) : isEnemyTurn ? (
+                  <span className="text-red-400 text-sm">{currentCombatant?.name}&apos;s turn</span>
+                ) : currentTurnPlayer ? (
+                  <span className="text-cyan-400 text-sm">
+                    Waiting for {currentTurnPlayer.name} ({currentTurnChar?.name})
+                  </span>
+                ) : null}
               </div>
 
               {/* Initiative Order */}
@@ -370,6 +557,7 @@ export default function Room() {
                 <div className="flex flex-wrap gap-1 text-xs">
                   {game.combat.initiativeOrder.map((combatant, idx) => {
                     const isCurrentTurn = idx === game.combat!.turnIndex;
+                    const isNextTurn = idx === (game.combat!.turnIndex + 1) % game.combat!.initiativeOrder.length;
                     const isPlayer = game.characters.some((c) => c.id === combatant.id);
                     const isMe = combatant.id === currentCharacter?.id;
                     return (
@@ -378,12 +566,14 @@ export default function Room() {
                         className={`px-2 py-0.5 border ${
                           isCurrentTurn
                             ? "border-amber-400 bg-amber-900/50 text-amber-300"
+                            : isNextTurn
+                            ? "border-cyan-600 text-cyan-400"
                             : isPlayer
                             ? "border-green-700 text-green-500"
                             : "border-red-800 text-red-500"
-                        } ${isMe ? "font-bold" : ""}`}
+                        } ${isMe ? "font-bold underline" : ""}`}
                       >
-                        {combatant.name} ({combatant.initiative})
+                        {isCurrentTurn && "▶ "}{combatant.name} ({combatant.initiative})
                       </span>
                     );
                   })}
@@ -394,7 +584,7 @@ export default function Room() {
               {game.combat.enemies && game.combat.enemies.length > 0 && (
                 <div className="space-y-1">
                   <div className="text-red-600 text-xs">ENEMIES</div>
-                  {game.combat.enemies.map((enemy) => {
+                  {game.combat.enemies.filter(e => e.currentHp > 0).map((enemy) => {
                     const hpPercent = (enemy.currentHp / enemy.maxHp) * 100;
                     return (
                       <div key={enemy.id} className="flex items-center gap-2 text-xs">
@@ -420,14 +610,14 @@ export default function Room() {
                 </div>
               )}
 
-              {/* Combat Tips */}
-              {game.currentTurn === currentCharacter?.id && (
-                <div className="text-amber-600 text-xs border-t border-red-900 pt-2">
-                  Actions: attack [target], cast [spell], move, dodge, dash, help, hide
-                </div>
-              )}
+              {/* Combat Tips - shown to everyone so they can plan */}
+              <div className={`text-xs border-t border-red-900 pt-2 ${isMyTurn ? "text-amber-500" : "text-green-700"}`}>
+                {isMyTurn ? "Your actions: " : "Actions: "}
+                attack [target], cast [spell], dodge, dash, disengage, help, hide
+              </div>
             </div>
-          )}
+            );
+          })()}
 
           {/* Input */}
           <form
