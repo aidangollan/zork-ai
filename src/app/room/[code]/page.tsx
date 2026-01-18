@@ -71,15 +71,14 @@ export default function Room() {
       const player = gameData.players.find((p) => p.id === pid);
       if (!player) return "join";
 
-      // Show intro after joining but before character creation
+      // Returning player with character - go straight to game
+      if (player.characterId) {
+        return "game";
+      }
+
+      // New player onboarding flow: intro → character creation → how to play
       if (!introSeen) return "intro";
-
-      if (!player.characterId) return "character_creation";
-
-      // Show how-to-play after character creation
-      if (!howToPlaySeen) return "how_to_play";
-
-      return "game";
+      return "character_creation";
     },
     []
   );
@@ -143,7 +142,7 @@ export default function Room() {
         setPlayerId(data.playerId);
         localStorage.setItem(`player_${code}`, data.playerId);
         setGame(data.game);
-        setViewState("character_creation");
+        setViewState("intro"); // Show intro first, then character creation
       } else {
         alert(data.error || "Could not join game");
       }
@@ -173,7 +172,7 @@ export default function Room() {
 
       if (data.success) {
         setGame(data.game);
-        setViewState("game");
+        setViewState("how_to_play"); // Show how-to-play before starting game
       } else {
         alert(data.error || "Could not create character");
       }
