@@ -1,0 +1,7 @@
+{
+  "functions": {
+    "src/app/api/game/[code]/route.ts": {
+      "maxDuration": 60
+    }
+  }
+}
